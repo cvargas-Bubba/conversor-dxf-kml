@@ -67,6 +67,22 @@ textarea{font:12px ui-monospace,Consolas,monospace;min-height:64px;margin-top:8p
 .btn:disabled{background:#b9c4be;cursor:not-allowed}
 .summary{color:var(--muted);text-align:center;margin-top:8px;font-size:12.5px}
 .foot{color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:14px;margin:0}
+.field-label{display:block;font-size:12.5px;font-weight:600;margin:12px 0 4px}
+.detect{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:10px 12px;background:#f6faf9}
+.detect.warn{border-left-color:#c58f00;background:var(--warn-bg)}
+.detect-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.chip{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:var(--accent);color:#fff;border-radius:4px;padding:2px 6px}
+.detect.warn .chip{background:#a87800}
+.detect p{margin:6px 0 0;font-size:13px}
+.detect .detect-note{color:var(--muted);font-size:12.5px}
+.detect .linkbtn{margin-top:6px;font-weight:600}
+.local{margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:4px 12px 12px;background:#fafbf9}
+.cp{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px;margin-top:12px}
+.cp-title{grid-column:1/-1;font-weight:600;font-size:12.5px}
+.cp-title span{font-weight:400;color:var(--muted)}
+.cp label{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--muted)}
+.cp input{width:100%;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
+.cp input:read-only{background:#eef0ed;color:var(--muted)}
 .hidden{display:none!important}
 @media (max-width:820px){
   .app{grid-template-columns:1fr;height:auto}
@@ -108,9 +124,40 @@ textarea{font:12px ui-monospace,Consolas,monospace;min-height:64px;margin-top:8p
 
   <section class="step">
     <h2><span class="num">3</span>Sistema de coordenadas del plano</h2>
+    <div class="detect hidden" id="detect">
+      <div class="detect-top"><span class="chip" id="detectChip"></span><strong id="detectTitle"></strong></div>
+      <p id="detectReason"></p>
+      <p class="detect-note hidden" id="detectNote"></p>
+      <button type="button" class="linkbtn hidden" id="detectReset">Usar el sistema detectado</button>
+    </div>
+    <label class="field-label" for="crs">Sistema usado para convertir</label>
     <select id="crs"></select>
     <p class="hint" id="crsHint"></p>
     <textarea id="customDef" class="hidden" spellcheck="false" placeholder="+proj=utm +zone=19 +south +datum=WGS84 +units=m +no_defs"></textarea>
+    <div class="local hidden" id="localPanel">
+      <label class="field-label" for="localTarget">Sistema real de los puntos de control</label>
+      <select id="localTarget"></select>
+      <p class="hint">Usa puntos del plano cuyas coordenadas reales conozcas (vértices, PR o puntos GPS). En AutoCAD, el comando <kbd>ID</kbd> muestra las coordenadas de un punto del dibujo. Escribe los números sin separador de miles, por ejemplo <kbd>346485,12</kbd>.</p>
+      <div class="cp">
+        <div class="cp-title">Punto de control 1</div>
+        <label>X en el dibujo<input id="p1x" inputmode="decimal" autocomplete="off"></label>
+        <label>Y en el dibujo<input id="p1y" inputmode="decimal" autocomplete="off"></label>
+        <label>Este real<input id="p1e" inputmode="decimal" autocomplete="off"></label>
+        <label>Norte real<input id="p1n" inputmode="decimal" autocomplete="off"></label>
+      </div>
+      <div class="cp">
+        <div class="cp-title">Punto de control 2 <span>(opcional: calcula giro y escala)</span></div>
+        <label>X en el dibujo<input id="p2x" inputmode="decimal" autocomplete="off"></label>
+        <label>Y en el dibujo<input id="p2y" inputmode="decimal" autocomplete="off"></label>
+        <label>Este real<input id="p2e" inputmode="decimal" autocomplete="off"></label>
+        <label>Norte real<input id="p2n" inputmode="decimal" autocomplete="off"></label>
+      </div>
+      <div class="cp">
+        <label>Giro (°, antihorario)<input id="lRot" inputmode="decimal" value="0" autocomplete="off"></label>
+        <label>Escala<input id="lScale" inputmode="decimal" value="1" autocomplete="off"></label>
+      </div>
+      <p class="hint" id="localInfo"></p>
+    </div>
     <p class="hint">Revisa la vista previa: si el dibujo no cae donde corresponde, prueba otra zona o datum.</p>
   </section>
 
@@ -166,9 +213,23 @@ const CRS_LIST = [
   { id: 'sad69-19s', label: 'SAD69 / UTM zona 19S (EPSG:29189)', def: '+proj=utm +zone=19 +south +ellps=aust_SA +towgs84=-66.87,4.37,-38.52,0,0,0,0 +units=m +no_defs', hint: 'Datum antiguo. Queda unas decenas de metros desplazado respecto de WGS84.' },
   { id: 'sad69-18s', label: 'SAD69 / UTM zona 18S (EPSG:29188)', def: '+proj=utm +zone=18 +south +ellps=aust_SA +towgs84=-66.87,4.37,-38.52,0,0,0,0 +units=m +no_defs', hint: 'Datum antiguo. Queda unas decenas de metros desplazado respecto de WGS84.' },
   { id: 'wgs84-12s', label: 'WGS84 / UTM zona 12S, Isla de Pascua (EPSG:32712)', def: '+proj=utm +zone=12 +south +datum=WGS84 +units=m +no_defs', hint: 'Isla de Pascua.' },
+  { id: 'wgs84-17s', label: 'WGS84 / UTM zona 17S, Juan Fernández (EPSG:32717)', def: '+proj=utm +zone=17 +south +datum=WGS84 +units=m +no_defs', hint: 'Archipiélago Juan Fernández e islas Desventuradas.' },
+  { id: 'webmerc', label: 'Web Mercator (EPSG:3857)', def: 'EPSG:3857', noMeasure: true, hint: 'Proyección de mapas web. Sus distancias no son reales, así que no se calculan longitudes ni superficies.' },
   { id: 'geo', label: 'Coordenadas geográficas en grados (WGS84)', def: null, hint: 'El dibujo ya está en longitud (X) y latitud (Y).' },
+  { id: 'local', label: 'Coordenadas locales (ubicar con puntos de control)', def: null, hint: 'El plano usa un origen propio. Indica uno o dos puntos con sus coordenadas reales para ubicarlo.' },
   { id: 'custom', label: 'Otro sistema (definición proj4)…', def: null, hint: 'Pega la definición proj4 del sistema; la encuentras en epsg.io buscando el código EPSG.' },
 ];
+
+const EPSG_IDS = { 32719: 'wgs84-19s', 32718: 'wgs84-18s', 32717: 'wgs84-17s', 32712: 'wgs84-12s', 5362: 'sirgas-19s', 5361: 'sirgas-18s', 24879: 'psad56-19s', 24878: 'psad56-18s', 29189: 'sad69-19s', 29188: 'sad69-18s', 4326: 'geo', 3857: 'webmerc' };
+const UTM_IDS = {
+  wgs84: { 19: 'wgs84-19s', 18: 'wgs84-18s', 17: 'wgs84-17s', 12: 'wgs84-12s' },
+  sirgas: { 19: 'sirgas-19s', 18: 'sirgas-18s' },
+  psad56: { 19: 'psad56-19s', 18: 'psad56-18s' },
+  sad69: { 19: 'sad69-19s', 18: 'sad69-18s' },
+};
+const familyOf = id => (/^(wgs84|sirgas|psad56|sad69)-\d+s$/.exec(id || '') || [])[1] || null;
+const zoneOf = id => { const m = /-(\d+)s$/.exec(id || ''); return m ? +m[1] : null; };
+const utmId = (fam, zone) => (UTM_IDS[fam] && UTM_IDS[fam][zone]) || UTM_IDS.wgs84[zone];
 
 class UserError extends Error {}
 
@@ -231,7 +292,7 @@ function readPairs(text) {
     if (!/^-?\d{1,4}$/.test(c)) { i++; continue; }
     const code = +c;
     codes.push(code);
-    vals.push(code === 1 || code === 3 ? lines[i + 1] : lines[i + 1].trim());
+    vals.push(code === 1 || code === 3 || code === 301 || code === 303 ? lines[i + 1] : lines[i + 1].trim());
     i += 2;
   }
   return { codes, vals };
@@ -261,7 +322,7 @@ function parseDxf(text) {
   const { codes, vals } = P;
   const n = codes.length;
   if (!n) throw new UserError('El archivo está vacío o no es un DXF válido.');
-  const dxf = { insunits: 0, layers: new Map(), blocks: new Map(), entities: [], skipped: {} };
+  const dxf = { insunits: 0, layers: new Map(), blocks: new Map(), entities: [], skipped: {}, geo: null };
   let found = false;
   for (let i = 0; i < n;) {
     if (codes[i] === 0 && vals[i] === 'SECTION' && codes[i + 1] === 2) {
@@ -274,6 +335,7 @@ function parseDxf(text) {
       else if (name === 'TABLES') parseTables(P, s, e, dxf);
       else if (name === 'BLOCKS') parseBlocks(P, s, e, dxf);
       else if (name === 'ENTITIES') dxf.entities = interpret(P, records(P, s, e), dxf.skipped, true);
+      else if (name === 'OBJECTS') dxf.geo = parseGeoData(P, records(P, s, e));
       i = e + 1;
     } else i++;
   }
@@ -320,6 +382,29 @@ function parseBlocks(P, s, e, dxf) {
     }
     k = j;
   }
+}
+
+// Ubicación geográfica asignada en AutoCAD (objeto GEODATA).
+function parseGeoData(P, recs) {
+  for (const r of recs) {
+    if (r.type !== 'GEODATA') continue;
+    const f = fields(P, r);
+    let xml = '';
+    for (let i = r.s; i < r.e; i++) if (P.codes[i] === 301 || P.codes[i] === 303) xml += P.vals[i];
+    const epsg = /<Alias[^>]*id="(\d{4,5})"[^>]*type="CoordinateSystem"[^>]*>[\s\S]*?<Namespace>\s*EPSG Code\s*<\/Namespace>/i.exec(xml);
+    const name = /<(?:Projected|Geographic)CoordinateSystem[^>]*id="([^"]+)"/i.exec(xml) || /<ObjectId>([^<]+)<\/ObjectId>/i.exec(xml);
+    return {
+      version: int(f.get(90)),
+      type: int(f.get(70)),
+      design: f.has(10) ? [num(f.get(10)), num(f.get(20))] : null,
+      ref: f.has(11) ? [num(f.get(11)), num(f.get(21))] : null,
+      scale: num(f.get(40), 1) || 1,
+      north: [num(f.get(12), 0), num(f.get(22), 1)],
+      epsg: epsg ? +epsg[1] : null,
+      name: name ? name[1].trim() : null,
+    };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +710,167 @@ function extract(dxf, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// Detección del sistema de coordenadas
+// ---------------------------------------------------------------------------
+// Contorno simplificado de Chile continental (lon, lat). Su precisión (~0,5°) basta
+// para distinguir zonas UTM, que están separadas por 6°.
+const CHILE = [
+  [-69.5, -17.4], [-69.0, -18.1], [-68.9, -18.9], [-68.4, -19.4], [-68.6, -20.3], [-68.2, -21.3], [-67.9, -22.3], [-67.1, -22.8],
+  [-67.3, -24.0], [-68.3, -24.6], [-68.5, -26.0], [-68.8, -27.2], [-69.4, -28.2], [-69.8, -29.2], [-70.0, -30.4], [-70.4, -31.4],
+  [-70.2, -32.4], [-69.9, -33.4], [-70.0, -34.4], [-70.4, -35.4], [-70.5, -36.4], [-71.1, -37.4], [-71.0, -38.4], [-71.4, -39.4],
+  [-71.7, -40.4], [-71.9, -41.4], [-71.8, -42.4], [-71.7, -43.4], [-71.6, -44.4], [-71.6, -45.4], [-71.7, -46.4], [-71.9, -47.2],
+  [-72.4, -48.0], [-73.2, -49.2], [-73.3, -50.0], [-72.4, -50.8], [-72.3, -51.6], [-71.9, -52.0], [-69.5, -52.1], [-68.4, -52.3],
+  [-68.6, -52.6], [-68.6, -54.85], [-67.2, -54.9], [-66.5, -55.0], [-66.4, -55.6], [-67.3, -56.1], [-68.8, -56.7],
+  [-71.5, -55.7], [-74.0, -53.6], [-75.3, -52.5], [-75.9, -51.0], [-76.0, -49.5], [-75.9, -48.0], [-75.9, -46.5], [-75.3, -45.5],
+  [-75.1, -44.0], [-74.6, -43.0], [-74.3, -42.0], [-74.1, -41.0], [-73.9, -40.0], [-73.8, -39.0], [-73.9, -37.5], [-73.4, -36.5],
+  [-72.8, -35.5], [-72.2, -34.5], [-72.0, -33.5], [-71.9, -32.5], [-71.8, -31.0], [-71.7, -30.0], [-71.6, -29.0], [-71.4, -28.0],
+  [-71.1, -27.0], [-70.9, -26.0], [-70.8, -25.0], [-70.8, -24.0], [-70.6, -23.0], [-70.5, -22.0], [-70.4, -21.0], [-70.4, -20.0],
+  [-70.6, -19.0], [-70.6, -18.2], [-70.4, -17.4],
+];
+
+function inPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function inChile(lon, lat) {
+  if ((lat >= -34.2 && lat <= -33.3 && lon >= -81.2 && lon <= -78.4) ||  // Juan Fernández
+    (lat >= -26.7 && lat <= -25.9 && lon >= -80.5 && lon <= -79.6) ||    // islas Desventuradas
+    (lat >= -27.4 && lat <= -26.8 && lon >= -109.7 && lon <= -109.0)) {  // Isla de Pascua
+    return true;
+  }
+  if (lat > -16.5 || lat < -57.5 || lon < -77 || lon > -65.5) return false;
+  // Margen para planos junto a la costa o la frontera.
+  return inPoly(lon, lat, CHILE) || inPoly(lon - 0.5, lat, CHILE) || inPoly(lon + 0.5, lat, CHILE) ||
+    inPoly(lon, lat - 0.3, CHILE) || inPoly(lon, lat + 0.3, CHILE);
+}
+
+function samplePts(list, getArr, max) {
+  let total = 0;
+  for (const ft of list) total += getArr(ft).length;
+  const step = Math.max(1, Math.floor(total / max));
+  const out = [];
+  let idx = 0;
+  for (const ft of list) for (const p of getArr(ft)) if (idx++ % step === 0) out.push(p);
+  return out;
+}
+const srcArr = ft => (ft.kind === 'line' ? ft.pts : [ft.pt]);
+const llArr = ft => (ft.kind === 'line' ? ft.ll : [ft.p]);
+
+function chileFraction(pts, fwd) {
+  if (!pts.length) return 0;
+  let n = 0;
+  for (const p of pts) {
+    let q = null;
+    try { q = fwd(p); } catch (e) { /* punto fuera del dominio de la proyección */ }
+    if (q && Number.isFinite(q[0]) && Number.isFinite(q[1]) && inChile(q[0], q[1])) n++;
+  }
+  return n / pts.length;
+}
+
+// Prueba las zonas UTM sur usadas en Chile y devuelve aquella en que el dibujo cae en el país.
+function bestUtmZone(pts) {
+  let best = null;
+  for (const zone of [19, 18, 17, 12]) {
+    const conv = proj4(`+proj=utm +zone=${zone} +south +datum=WGS84 +units=m +no_defs`, 'WGS84');
+    const f = chileFraction(pts, p => conv.forward(p));
+    if (!best || f > best.f) best = { zone, f };
+  }
+  return best && best.f >= 0.6 ? best : null;
+}
+
+function detectFromGeoData(g) {
+  if (!g.epsg && !g.name) return null;
+  const csName = g.name || `EPSG:${g.epsg}`;
+  let target = null, custom = null;
+  if (g.epsg && EPSG_IDS[g.epsg]) target = EPSG_IDS[g.epsg];
+  else if (g.epsg && /^32[67]\d\d$/.test(String(g.epsg))) {
+    const s = String(g.epsg);
+    custom = `+proj=utm +zone=${+s.slice(3)}${s[2] === '7' ? ' +south' : ''} +datum=WGS84 +units=m +no_defs`;
+  } else if (g.name) {
+    const m = /UTM(?:84|WGS84)?\D*?(\d{1,2})([NS])\b/i.exec(g.name);
+    if (m && m[2].toUpperCase() === 'S') {
+      const fam = /PSAD/i.test(g.name) ? 'psad56' : /SAD69|SA69/i.test(g.name) ? 'sad69' : /SIRGAS/i.test(g.name) ? 'sirgas' : 'wgs84';
+      target = (UTM_IDS[fam] && UTM_IDS[fam][+m[1]]) || null;
+      if (!target) custom = `+proj=utm +zone=${+m[1]} +south +datum=WGS84 +units=m +no_defs`;
+    }
+  }
+  const reason = `El plano tiene una ubicación geográfica asignada en AutoCAD con el sistema ${csName}.`;
+  if (!target && !custom) {
+    return { kind: 'geodata', warn: true, chip: 'AutoCAD', crsId: null, title: 'Sistema de AutoCAD no reconocido', reason: reason + ' Ese sistema no está en la lista: elígelo manualmente o pega su definición proj4.' };
+  }
+  const label = target ? CRS_LIST.find(c => c.id === target).label : csName;
+  const res = { kind: 'geodata', chip: 'AutoCAD', title: `Georreferenciado en AutoCAD: ${label}`, reason, custom };
+  const rotDeg = 90 - Math.atan2(g.north[1], g.north[0]) / DEG;
+  const moved = g.design && g.ref && (Math.hypot(g.design[0] - g.ref[0], g.design[1] - g.ref[1]) > 1e-6 || Math.abs(g.scale - 1) > 1e-9 || Math.abs(rotDeg) > 1e-9);
+  if (moved && (g.type === 1 || g.type === 2) && target !== 'geo') {
+    res.crsId = 'local';
+    res.local = { targetId: target || 'custom', p1: g.design, t1: g.ref, rot: rotDeg, scale: g.scale };
+    res.reason += ' El dibujo tiene un origen propio y se ubica con el punto de referencia, el giro y la escala guardados en el archivo.';
+  } else {
+    res.crsId = target || 'custom';
+  }
+  return res;
+}
+
+// Clasifica las coordenadas del dibujo: geográficas, UTM, otra proyección o locales.
+function detectCrs(dxf, feats) {
+  if (typeof proj4 === 'undefined') return null;
+  if (dxf.geo) {
+    const g = detectFromGeoData(dxf.geo);
+    if (g) return g;
+  }
+  const pts = samplePts(feats, srcArr, 600).filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  if (!pts.length) return null;
+  const fam = storeGet('dxf2kml.datum') || 'wgs84';
+  const xs = pts.map(p => p[0]).sort((a, b) => a - b);
+  const ys = pts.map(p => p[1]).sort((a, b) => a - b);
+  const x1 = quant(xs, 0.02), x2 = quant(xs, 0.98), y1 = quant(ys, 0.02), y2 = quant(ys, 0.98);
+  const mx = quant(xs, 0.5), my = quant(ys, 0.5);
+  const big = Math.max(Math.abs(x1), Math.abs(x2), Math.abs(y1), Math.abs(y2));
+
+  if (big <= 180 && Math.abs(y1) <= 90 && Math.abs(y2) <= 90 && chileFraction(pts, p => p) >= 0.6) {
+    return { kind: 'geo', chip: 'Geográficas', crsId: 'geo', title: 'Coordenadas geográficas (grados)', reason: `Longitud ≈ ${fmt(mx, 5)}°, latitud ≈ ${fmt(my, 5)}°: el dibujo ya está en grados y cae en Chile.` };
+  }
+
+  // UTM del hemisferio sur, en metros o escalado a milímetros / centímetros.
+  for (const [factor, unit] of [[1, ''], [0.001, 'milímetros'], [0.01, 'centímetros']]) {
+    if (!(x1 * factor > 100000 && x2 * factor < 900000 && y1 * factor > 1000000 && y2 * factor < 10000000)) continue;
+    const best = bestUtmZone(factor === 1 ? pts : pts.map(p => [p[0] * factor, p[1] * factor]));
+    if (!best) {
+      if (factor !== 1) continue;
+      return { kind: 'projected', warn: true, soft: true, chip: 'Proyectada', crsId: utmId(fam, 19), title: 'Formato UTM, zona no identificada', reason: `Este ≈ ${fmt(mx, 0)}, Norte ≈ ${fmt(my, 0)}: los valores tienen formato UTM del hemisferio sur, pero en ninguna de las zonas usadas en Chile (19S, 18S, 17S o 12S) el dibujo cae en territorio chileno. Elige el sistema manualmente.` };
+    }
+    const id = utmId(fam, best.zone);
+    const res = { kind: 'utm', chip: 'UTM', crsId: id, title: `Proyección UTM, zona ${best.zone}S${unit ? ` (dibujo en ${unit})` : ''}`, reason: `Este ≈ ${fmt(mx * factor, 0)} m, Norte ≈ ${fmt(my * factor, 0)} m: formato UTM del hemisferio sur. Con la zona ${best.zone}S el dibujo cae en Chile; con las otras zonas quedaría fuera del país.` };
+    if (factor !== 1) {
+      res.crsId = 'local';
+      res.local = { targetId: id, p1: [0, 0], t1: [0, 0], rot: 0, scale: factor };
+      res.reason += ` Como el dibujo está en ${unit}, se multiplica por ${fmtIn(factor, 3)} para pasarlo a metros.`;
+    }
+    return res;
+  }
+
+  if (big > 180 && big <= 20037509) {
+    const conv = proj4('EPSG:3857', 'WGS84');
+    if (chileFraction(pts, p => conv.forward(p)) >= 0.6) {
+      return { kind: 'projected', chip: 'Proyectada', crsId: 'webmerc', title: 'Web Mercator (EPSG:3857)', reason: `X ≈ ${fmt(mx, 0)}, Y ≈ ${fmt(my, 0)}: valores negativos del orden de millones, propios de la proyección de mapas web; con ella el dibujo cae en Chile.` };
+    }
+  }
+
+  if (Math.max(Math.abs(mx), Math.abs(my)) >= 100000) {
+    return { kind: 'projected', warn: true, soft: true, chip: 'Proyectada', crsId: 'local', local: null, title: 'Proyectada, sistema no identificado', reason: `X ≈ ${fmt(mx, 0)}, Y ≈ ${fmt(my, 0)}: coordenadas planas grandes que no corresponden a UTM en Chile. Puede ser otra proyección o un sistema de obra con origen desplazado. Si conoces su definición proj4, elige "Otro sistema"; si no, usa "Coordenadas locales" con puntos de control.` };
+  }
+
+  const units = { 1: 'pulgadas', 2: 'pies', 4: 'milímetros', 5: 'centímetros', 6: 'metros' }[dxf.insunits];
+  return { kind: 'local', chip: 'Local', crsId: 'local', local: null, title: 'Coordenadas locales', reason: `X ≈ ${fmt(mx, 2)}, Y ≈ ${fmt(my, 2)}: valores pequeños, sin formato geográfico ni UTM. El plano usa un origen propio; para ubicarlo, ingresa abajo al menos un punto de control.${units ? ` El archivo indica unidades en ${units}.` : ''}` };
+}
+
+// ---------------------------------------------------------------------------
 // Proyección a WGS84
 // ---------------------------------------------------------------------------
 function currentCrs() { return CRS_LIST.find(c => c.id === $('crs').value) || CRS_LIST[0]; }
@@ -644,8 +890,73 @@ function getProjector(crs) {
   }
 }
 
-function projectAll(feats, crs) {
-  const fwd = getProjector(crs);
+// Convierte textos como "346485,12", "6.297.900" o "346485.12" en número.
+function parseNum(s) {
+  s = String(s == null ? '' : s).replace(/\s/g, '');
+  if (!s) return NaN;
+  const comma = s.lastIndexOf(','), dot = s.lastIndexOf('.');
+  if (comma > -1 && dot > -1) s = comma > dot ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+  else if (comma > -1) s = s.split(',').length > 2 ? s.replace(/,/g, '') : s.replace(',', '.');
+  else if (s.split('.').length > 2) s = s.replace(/\./g, '');
+  return /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s) ? parseFloat(s) : NaN;
+}
+
+// Coordenadas locales → sistema real, con uno o dos puntos de control (traslación, giro y escala).
+function readLocal() {
+  const val = id => parseNum($(id).value);
+  const s1 = [val('p1x'), val('p1y')], t1 = [val('p1e'), val('p1n')];
+  const s2 = [val('p2x'), val('p2y')], t2 = [val('p2e'), val('p2n')];
+  const full = a => a.every(Number.isFinite);
+  const res = { targetId: $('localTarget').value, twoPts: false, p2Partial: false };
+  if (!full(s1) || !full(t1)) {
+    res.error = 'El plano está en coordenadas locales: para ubicarlo, completa el punto de control 1 en el paso 3 (coordenadas en el dibujo y coordenadas reales).';
+    return res;
+  }
+  let rot, scale;
+  if (full(s2) && full(t2)) {
+    const sx = s2[0] - s1[0], sy = s2[1] - s1[1], tx = t2[0] - t1[0], ty = t2[1] - t1[1];
+    if (Math.hypot(sx, sy) < 1e-9 || Math.hypot(tx, ty) < 1e-9) {
+      res.error = 'Los puntos de control 1 y 2 no pueden coincidir.';
+      return res;
+    }
+    scale = Math.hypot(tx, ty) / Math.hypot(sx, sy);
+    rot = Math.atan2(ty, tx) - Math.atan2(sy, sx);
+    res.twoPts = true;
+  } else {
+    res.p2Partial = [...s2, ...t2].some(Number.isFinite);
+    rot = (Number.isFinite(val('lRot')) ? val('lRot') : 0) * DEG;
+    scale = val('lScale');
+    if (!(scale > 0)) {
+      res.error = 'La escala de las coordenadas locales debe ser un número mayor que 0.';
+      return res;
+    }
+  }
+  const c = Math.cos(rot) * scale, s = Math.sin(rot) * scale;
+  res.plane = p => {
+    const dx = p[0] - s1[0], dy = p[1] - s1[1];
+    return [t1[0] + c * dx - s * dy, t1[1] + s * dx + c * dy];
+  };
+  res.rot = rot;
+  res.scale = scale;
+  return res;
+}
+
+const isLongLat = crs => crs.id === 'geo' || (crs.id === 'custom' && /\+proj=(longlat|latlong)/.test($('customDef').value));
+
+// Cadena de conversión: coordenadas del dibujo → plano real (solo en modo local) → WGS84.
+function getPipeline(crs) {
+  if (crs.id === 'local') {
+    const lp = readLocal();
+    if (lp.error) throw new UserError(lp.error);
+    const target = CRS_LIST.find(c => c.id === lp.targetId) || CRS_LIST[0];
+    const fwd = getProjector(target);
+    return { plane: lp.plane, fwd: p => fwd(lp.plane(p)), measure: !target.noMeasure && !isLongLat(target), local: lp };
+  }
+  return { plane: null, fwd: getProjector(crs), measure: !crs.noMeasure && !isLongLat(crs), local: null };
+}
+
+function projectAll(feats, pipe) {
+  const { fwd, plane } = pipe;
   const ok = p => Number.isFinite(p[0]) && Number.isFinite(p[1]) && Math.abs(p[1]) <= 90 && Math.abs(p[0]) <= 360;
   const out = [];
   let bad = 0;
@@ -654,7 +965,7 @@ function projectAll(feats, crs) {
       const ll = ft.pts.map(fwd);
       if (!ll.every(ok)) { bad++; continue; }
       let len = 0, area = 0;
-      const pts = ft.pts;
+      const pts = plane ? ft.pts.map(plane) : ft.pts;
       for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
       if (ft.closed) {
         for (let i = 0; i < pts.length; i++) {
@@ -675,31 +986,19 @@ function projectAll(feats, crs) {
   return { feats: out, bad };
 }
 
-// Mediana robusta de una muestra de vértices: [x, y]
+// Muestra de vértices separada en X e Y
 function sampleMedian(list, getArr) {
-  let total = 0;
-  for (const ft of list) total += getArr(ft).length;
-  const step = Math.max(1, Math.floor(total / 20000));
-  const xs = [], ys = [];
-  let idx = 0;
-  for (const ft of list) for (const p of getArr(ft)) if (idx++ % step === 0) { xs.push(p[0]); ys.push(p[1]); }
-  return { xs, ys };
+  const pts = samplePts(list, getArr, 20000);
+  return { xs: pts.map(p => p[0]), ys: pts.map(p => p[1]) };
 }
 const quant = (a, q) => a[Math.min(a.length - 1, Math.max(0, Math.round((a.length - 1) * q)))];
-
-function inChile(lon, lat) {
-  return (lat >= -56.5 && lat <= -17 && lon >= -76.5 && lon <= -66) ||   // continental
-    (lat >= -34.5 && lat <= -33 && lon >= -81 && lon <= -78.5) ||        // Juan Fernández
-    (lat >= -27.5 && lat <= -26.8 && lon >= -110 && lon <= -108.9) ||    // Isla de Pascua
-    (lat >= -26.6 && lat <= -26 && lon >= -80.4 && lon <= -79.7);        // San Félix y San Ambrosio
-}
 
 // ---------------------------------------------------------------------------
 // KML
 // ---------------------------------------------------------------------------
 function buildKml() {
   const opts = readOpts();
-  const measure = opts.measure && currentCrs().id !== 'geo';
+  const measure = opts.measure && state.measure;
   const styles = new Map();
   const bgr = c => c.slice(5, 7) + c.slice(3, 5) + c.slice(1, 3);
 
@@ -770,7 +1069,7 @@ function buildKml() {
 // ---------------------------------------------------------------------------
 // Interfaz
 // ---------------------------------------------------------------------------
-const state = { name: '', dxf: null, feats: [], proj: [], layerOn: new Map() };
+const state = { name: '', dxf: null, feats: [], proj: [], layerOn: new Map(), measure: true, detected: null, manualCrs: false, needsDetect: false };
 let map = null, renderer = null;
 const groups = new Map();
 
@@ -807,33 +1106,108 @@ function clearMsgs(group) {
   for (const el of [...$('msgs').children]) if (!group || el.dataset.group === group) el.remove();
 }
 
-function setCrs(id) {
-  $('crs').value = id;
-  onCrsChange();
+// Número para un campo de texto, con coma decimal.
+const fmtIn = (v, dec) => String(Number(v.toFixed(dec))).replace('.', ',');
+
+function updateCrsUi() {
+  const crs = currentCrs();
+  const local = crs.id === 'local';
+  $('crsHint').textContent = crs.hint;
+  $('localPanel').classList.toggle('hidden', !local);
+  $('customDef').classList.toggle('hidden', !(crs.id === 'custom' || (local && $('localTarget').value === 'custom')));
 }
 
 function onCrsChange() {
-  const crs = currentCrs();
-  $('crsHint').textContent = crs.hint;
-  $('customDef').classList.toggle('hidden', crs.id !== 'custom');
-  storeSet('dxf2kml.crs', crs.id);
+  const id = currentCrs().id;
+  state.manualCrs = true;
+  storeSet('dxf2kml.crs', id);
+  if (familyOf(id)) storeSet('dxf2kml.datum', familyOf(id));
+  updateCrsUi();
   rebuild(true);
 }
 
+function setLocalInputs(L) {
+  for (const id of ['p1x', 'p1y', 'p1e', 'p1n', 'p2x', 'p2y', 'p2e', 'p2n']) $(id).value = '';
+  $('lRot').value = L ? fmtIn(L.rot, 6) : '0';
+  $('lScale').value = L ? fmtIn(L.scale, 9) : '1';
+  if (L) {
+    $('localTarget').value = L.targetId;
+    $('p1x').value = fmtIn(L.p1[0], 4);
+    $('p1y').value = fmtIn(L.p1[1], 4);
+    $('p1e').value = fmtIn(L.t1[0], 4);
+    $('p1n').value = fmtIn(L.t1[1], 4);
+  }
+}
+
+// Aplica al formulario el sistema detectado para el archivo cargado.
+function applyDetection() {
+  const d = state.detected;
+  if (!d) return;
+  if (d.custom) $('customDef').value = d.custom;
+  if (d.crsId === 'local') {
+    $('crs').value = 'local';
+    setLocalInputs(d.local);
+  } else if (d.crsId) {
+    $('crs').value = d.crsId;
+  }
+  updateCrsUi();
+}
+
+function useDetected() {
+  state.manualCrs = false;
+  applyDetection();
+  rebuild(true);
+}
+
+function renderDetection() {
+  const d = state.dxf ? state.detected : null;
+  $('detect').classList.toggle('hidden', !d);
+  if (!d) return;
+  $('detect').classList.toggle('warn', !!d.warn);
+  $('detectChip').textContent = d.chip;
+  $('detectTitle').textContent = d.title;
+  $('detectReason').textContent = d.reason;
+  let note = '';
+  if (d.kind === 'utm') {
+    const crs = currentCrs();
+    const fam = familyOf(crs.id === 'local' ? $('localTarget').value : crs.id);
+    note = fam === 'psad56' || fam === 'sad69'
+      ? `Datum en uso: ${fam === 'psad56' ? 'PSAD56' : 'SAD69'}. Si el dibujo queda desplazado, prueba WGS84 / SIRGAS-Chile con la misma zona.`
+      : 'El datum no se puede detectar: se asume WGS84 / SIRGAS-Chile. Si el plano es antiguo y queda desplazado unos cientos de metros, elige PSAD56 o SAD69 con la misma zona.';
+  }
+  $('detectNote').textContent = note;
+  $('detectNote').classList.toggle('hidden', !note);
+  const detectedId = d.crsId || (d.custom ? 'custom' : null);
+  $('detectReset').classList.toggle('hidden', !(state.manualCrs && detectedId && !d.soft && currentCrs().id !== detectedId));
+}
+
+function updateLocalInfo(lp) {
+  const two = !!(lp && lp.twoPts);
+  $('lRot').readOnly = two;
+  $('lScale').readOnly = two;
+  const info = $('localInfo');
+  if (!lp) { info.textContent = ''; return; }
+  if (two) {
+    $('lRot').value = fmtIn(lp.rot / DEG, 4);
+    $('lScale').value = fmtIn(lp.scale, 6);
+    info.textContent = 'Giro y escala calculados con los dos puntos.' + (Math.abs(lp.scale - 1) > 0.01 ? ' La escala se aleja de 1: revisa las unidades del dibujo o los puntos ingresados.' : '');
+  } else {
+    info.textContent = (lp.p2Partial ? 'El punto 2 está incompleto y no se usa. ' : '') + 'Con un solo punto el plano se traslada con el giro y la escala indicados; agrega un segundo punto para calcularlos.';
+  }
+}
+
 function initCrs() {
-  const sel = $('crs');
+  const sel = $('crs'), target = $('localTarget');
   for (const c of CRS_LIST) {
-    const o = document.createElement('option');
-    o.value = c.id;
-    o.textContent = c.label;
-    sel.appendChild(o);
+    sel.appendChild(new Option(c.label, c.id));
+    if (c.id !== 'geo' && c.id !== 'local') target.appendChild(new Option(c.label, c.id));
   }
   const saved = storeGet('dxf2kml.crs');
   if (saved && CRS_LIST.some(c => c.id === saved)) sel.value = saved;
+  const savedTarget = storeGet('dxf2kml.localTarget');
+  if (savedTarget && CRS_LIST.some(c => c.id === savedTarget)) target.value = savedTarget;
   $('customDef').value = storeGet('dxf2kml.custom') || '';
-  const crs = currentCrs();
-  $('crsHint').textContent = crs.hint;
-  $('customDef').classList.toggle('hidden', crs.id !== 'custom');
+  updateCrsUi();
 }
 
 function initMap() {
@@ -852,6 +1226,11 @@ function initMap() {
 
 function renderMap(fit) {
   $('mapEmpty').classList.toggle('hidden', state.proj.length > 0 || !map);
+  if (map) {
+    $('mapEmpty').querySelector('span').textContent = state.dxf && currentCrs().id === 'local'
+      ? 'Ingresa un punto de control para ver el plano'
+      : 'La vista previa aparecerá aquí';
+  }
   if (!map) return;
   for (const g of groups.values()) g.remove();
   groups.clear();
@@ -953,63 +1332,50 @@ const SKIP_NAMES = { HATCH: 'sombreados', DIMENSION: 'cotas', LEADER: 'directric
 
 function rebuild(fit) {
   clearMsgs('build');
-  if (!state.dxf) return;
+  if (!state.dxf) { renderDetection(); return; }
   const opts = readOpts();
   const { feats, stats } = extract(state.dxf, opts);
   state.feats = feats;
+  if (state.needsDetect) {
+    state.needsDetect = false;
+    state.detected = detectCrs(state.dxf, feats);
+    applyDetection();
+  }
+  renderDetection();
   const crs = currentCrs();
 
-  let res;
+  let res = { feats: [], bad: 0 }, problem = null;
   try {
-    res = projectAll(feats, crs);
+    const pipe = getPipeline(crs);
+    state.measure = pipe.measure;
+    updateLocalInfo(pipe.local);
+    res = projectAll(feats, pipe);
   } catch (e) {
     if (!(e instanceof UserError)) throw e;
-    msg('err', e.message);
-    state.proj = [];
-    renderLayers(); renderMap(false); updateSummary();
-    return;
+    problem = e.message;
+    updateLocalInfo(null);
   }
   state.proj = res.feats;
   renderLayers();
   renderMap(fit);
   updateSummary();
+  if (problem) msg('warn', problem);
 
   if (!feats.length) {
     msg('warn', 'No se encontraron elementos dibujables en el espacio modelo del plano.');
     return;
   }
 
-  // Revisión de coordenadas (sobre los valores originales del dibujo)
-  const { xs, ys } = sampleMedian(feats, ft => (ft.kind === 'line' ? ft.pts : [ft.pt]));
-  xs.sort((a, b) => a - b);
-  ys.sort((a, b) => a - b);
-  const mx = quant(xs, 0.5), my = quant(ys, 0.5);
-  const looksGeo = Math.abs(mx) <= 180 && Math.abs(my) <= 90;
-  const looksUtm = mx > 100000 && mx < 900000 && my > 1000000 && my < 10000000;
-  const where = `X ≈ ${fmt(mx, looksGeo ? 5 : 0)}, Y ≈ ${fmt(my, looksGeo ? 5 : 0)}`;
-  let coordWarned = false;
-
-  if (crs.id === 'geo' && !looksGeo) {
-    msg('err', `Las coordenadas del dibujo (${where}) no son grados. Elige un sistema UTM.`, 'build', { label: 'Usar WGS84 / UTM 19S', run: () => setCrs('wgs84-19s') });
-    coordWarned = true;
-  } else if (crs.id !== 'geo' && crs.id !== 'custom' && looksGeo) {
-    msg('warn', `Las coordenadas del dibujo (${where}) parecen estar en grados, no en UTM.`, 'build', { label: 'Usar coordenadas geográficas', run: () => setCrs('geo') });
-    coordWarned = true;
-  } else if (crs.id !== 'geo' && crs.id !== 'custom' && !looksUtm) {
-    const units = { 1: 'pulgadas', 2: 'pies', 4: 'milímetros', 5: 'centímetros' }[state.dxf.insunits];
-    msg('warn', `Las coordenadas del dibujo (${where}) no parecen UTM. Es probable que el plano use coordenadas locales${units ? ` o esté dibujado en ${units}` : ''}, y el KML no quedará bien ubicado.`);
-    coordWarned = true;
+  const d = state.detected;
+  const detectedId = d && (d.crsId || (d.custom ? 'custom' : null));
+  if (state.manualCrs && detectedId && !d.soft && crs.id !== detectedId && !(zoneOf(crs.id) && zoneOf(crs.id) === zoneOf(detectedId))) {
+    msg('warn', `El sistema elegido no coincide con el detectado (${d.title}).`, 'build', { label: 'Usar el sistema detectado', run: useDetected });
   }
-
-  if (!coordWarned && res.feats.length) {
-    const { xs: lons, ys: lats } = sampleMedian(res.feats, ft => (ft.kind === 'line' ? ft.ll : [ft.p]));
-    let inside = 0;
-    for (let i = 0; i < lons.length; i++) if (inChile(lons[i], lats[i])) inside++;
-    if (inside < lons.length * 0.5) {
-      msg('warn', 'La mayor parte del dibujo queda fuera de Chile. Revisa la zona UTM (18S o 19S) y el datum en el paso 3.');
+  if (res.feats.length && !(d && d.warn && !state.manualCrs)) {
+    if (chileFraction(samplePts(res.feats, llArr, 2000), p => p) < 0.5) {
+      msg('warn', 'La mayor parte del dibujo queda fuera de Chile. Revisa el sistema de coordenadas en el paso 3.');
     }
   }
-
   if (res.bad) msg('warn', `${res.bad.toLocaleString('es-CL')} elementos tenían coordenadas que no se pudieron convertir y se omitieron.`);
   if (stats.xrefs.size) msg('warn', `El plano tiene referencias externas que no se incluyen (${[...stats.xrefs].join(', ')}). En AutoCAD, únelas al dibujo con "Unir" en el administrador de referencias externas antes de exportar.`);
   if (stats.missing.size) msg('info', `Hay bloques sin definición en el archivo: ${[...stats.missing].slice(0, 5).join(', ')}${stats.missing.size > 5 ? '…' : ''}.`);
@@ -1039,6 +1405,9 @@ async function loadFile(file) {
     state.dxf = dxf;
     state.name = file.name;
     state.layerOn = new Map();
+    state.detected = null;
+    state.needsDetect = true;
+    state.manualCrs = false;
     const mb = file.size / 1048576;
     label.textContent = `${file.name} · ${mb >= 1 ? fmt(mb, 1) + ' MB' : Math.max(1, Math.round(file.size / 1024)) + ' KB'}`;
     $('howto').open = false;
@@ -1047,7 +1416,7 @@ async function loadFile(file) {
     console.error(e);
     state.dxf = null; state.feats = []; state.proj = [];
     label.textContent = file.name;
-    renderLayers(); renderMap(false); updateSummary();
+    renderLayers(); renderMap(false); updateSummary(); renderDetection();
     msg('err', e instanceof UserError ? e.message : 'No se pudo leer el archivo: ' + e.message, 'file');
   }
 }
@@ -1080,6 +1449,21 @@ window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', e => e.preventDefault());
 
 $('crs').addEventListener('change', onCrsChange);
+$('detectReset').addEventListener('click', useDetected);
+$('localTarget').addEventListener('change', () => {
+  const id = $('localTarget').value;
+  storeSet('dxf2kml.localTarget', id);
+  if (familyOf(id)) storeSet('dxf2kml.datum', familyOf(id));
+  updateCrsUi();
+  rebuild(true);
+});
+let localTimer = null;
+for (const id of ['p1x', 'p1y', 'p1e', 'p1n', 'p2x', 'p2y', 'p2e', 'p2n', 'lRot', 'lScale']) {
+  $(id).addEventListener('input', () => {
+    clearTimeout(localTimer);
+    localTimer = setTimeout(() => rebuild(true), 450);
+  });
+}
 let customTimer = null;
 $('customDef').addEventListener('input', () => {
   storeSet('dxf2kml.custom', $('customDef').value);
