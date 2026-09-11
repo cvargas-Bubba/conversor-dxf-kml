@@ -188,6 +188,16 @@ textarea{font:12px ui-monospace,Consolas,monospace;min-height:64px;margin-top:8p
       <div class="cp">
         <label>Giro (°, antihorario)<input id="lRot" inputmode="decimal" value="0" autocomplete="off"></label>
         <label>Escala<input id="lScale" inputmode="decimal" value="1" autocomplete="off"></label>
+        <div class="cp-actions" id="nudgeBtns">
+          <button type="button" class="pick" data-nudge="-1">−1°</button>
+          <button type="button" class="pick" data-nudge="-0.1">−0,1°</button>
+          <button type="button" class="pick" data-nudge="0.1">+0,1°</button>
+          <button type="button" class="pick" data-nudge="1">+1°</button>
+        </div>
+      </div>
+      <div class="coordhint hidden" id="northHint">
+        <div id="northText"></div>
+        <div class="cp-actions" id="northBtns"></div>
       </div>
       <p class="hint" id="localInfo"></p>
     </div>
@@ -361,7 +371,7 @@ function parseDxf(text) {
   const { codes, vals } = P;
   const n = codes.length;
   if (!n) throw new UserError('El archivo está vacío o no es un DXF válido.');
-  const dxf = { insunits: 0, layers: new Map(), blocks: new Map(), entities: [], skipped: {}, geo: null };
+  const dxf = { insunits: 0, layers: new Map(), blocks: new Map(), entities: [], inserts: [], skipped: {}, geo: null };
   let found = false;
   for (let i = 0; i < n;) {
     if (codes[i] === 0 && vals[i] === 'SECTION' && codes[i + 1] === 2) {
@@ -373,7 +383,11 @@ function parseDxf(text) {
       if (name === 'HEADER') parseHeader(P, s, e, dxf);
       else if (name === 'TABLES') parseTables(P, s, e, dxf);
       else if (name === 'BLOCKS') parseBlocks(P, s, e, dxf);
-      else if (name === 'ENTITIES') dxf.entities = interpret(P, records(P, s, e), dxf.skipped, true);
+      else if (name === 'ENTITIES') {
+        const recs = records(P, s, e);
+        dxf.entities = interpret(P, recs, dxf.skipped, true);
+        dxf.inserts = collectInserts(P, recs);
+      }
       else if (name === 'OBJECTS') dxf.geo = parseGeoData(P, records(P, s, e));
       i = e + 1;
     } else i++;
@@ -1426,6 +1440,93 @@ function centerForPick(n) {
   if (ll && Number.isFinite(ll[1])) map.setView([ll[1], ll[0]], 17);
 }
 
+// ---------------------------------------------------------------------------
+// Norte del plano (flechas de norte insertadas como bloque)
+// ---------------------------------------------------------------------------
+const NORTH_RE = /norte|north|rosa.?(de.?)?viento|compas|brujula|brújula/i;
+
+function collectInserts(P, recs) {
+  const out = [];
+  for (const r of recs) {
+    if (r.type !== 'INSERT') continue;
+    const f = fields(P, r);
+    out.push({ block: f.get(2) || '', x: num(f.get(10)), y: num(f.get(20)), rot: num(f.get(50)), paper: f.get(67) === '1' });
+  }
+  return out;
+}
+
+// Un bloque es flecha de norte si su nombre lo dice o si contiene el texto "N".
+function isNorthBlock(dxf, name) {
+  if (NORTH_RE.test(name)) return true;
+  const blk = dxf.blocks.get(name);
+  return !!blk && blk.ents.some(e => e.kind === 'text' && /^(N|NORTE|NORTH)\.?$/i.test(e.text.trim()));
+}
+
+function findNorthInserts(dxf) {
+  const known = new Map();
+  return (dxf.inserts || []).filter(i => {
+    if (!known.has(i.block)) known.set(i.block, isNorthBlock(dxf, i.block));
+    return known.get(i.block);
+  });
+}
+
+const norm180 = a => { const x = ((a % 360) + 360) % 360; return x > 180 ? x - 360 : x; };
+
+// Agrupa los giros parecidos. Se asume que la flecha del bloque apunta hacia arriba,
+// así que el dibujo está girado -giro respecto del norte.
+function northOptions(list, zone) {
+  const inRect = i => zone && i.x >= zone.x1 && i.x <= zone.x2 && i.y >= zone.y1 && i.y <= zone.y2;
+  let use = zone ? list.filter(i => !i.paper && inRect(i)) : [];
+  let scope = 'junto al dibujo elegido';
+  if (!use.length) { use = list.filter(i => !i.paper); scope = 'del espacio modelo'; }
+  if (!use.length) { use = list; scope = 'de las láminas'; }
+  if (!use.length) return null;
+  const groups = [];
+  for (const i of use) {
+    const a = ((i.rot % 360) + 360) % 360;
+    let g = groups.find(x => Math.abs(norm180(x.angle - a)) <= 5);
+    if (!g) { g = { angle: a, items: [] }; groups.push(g); }
+    g.items.push(i);
+  }
+  groups.sort((a, b) => b.items.length - a.items.length);
+  return {
+    scope,
+    options: groups.map(g => ({
+      rot: norm180(-(g.angle + g.items.reduce((s, i) => s + norm180(i.rot - g.angle), 0) / g.items.length)),
+      count: g.items.length,
+      block: g.items[0].block,
+    })),
+  };
+}
+
+function renderNorthHint() {
+  const n = state.dxf && currentCrs().id === 'local' ? northOptions(state.northInserts, zoneRect()) : null;
+  state.north = n;
+  $('northHint').classList.toggle('hidden', !n);
+  $('northBtns').innerHTML = '';
+  if (!n) return;
+  const one = n.options[0];
+  if (n.options.length === 1) {
+    $('northText').textContent = `El plano trae una flecha de norte (bloque «${one.block}»): el dibujo está girado ${fmt(one.rot, 1)}° respecto del norte. Es un valor de partida: las flechas suelen estar puestas a ojo, así que compara en el mapa y ajústalo, o usa dos puntos de control para un giro exacto.`;
+  } else {
+    $('northText').textContent = `El plano trae flechas de norte ${n.scope} con giros distintos. Elige la del dibujo que estás convirtiendo y ajústala en el mapa si hace falta:`;
+  }
+  for (const o of n.options) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pick';
+    b.textContent = n.options.length === 1 ? 'Usar este giro' : `Usar ${fmt(o.rot, 1)}° (${o.block}, ${o.count})`;
+    b.addEventListener('click', () => useNorth(o.rot));
+    $('northBtns').appendChild(b);
+  }
+}
+
+function useNorth(rot) {
+  $('lRot').value = fmtIn(rot, 4);
+  state.northApplied = true;
+  rebuild(state.proj.length === 0);
+}
+
 function startPick(n, what) {
   endPick();
   state.picking = { n, what };
@@ -1462,7 +1563,7 @@ function endPick() {
 
 function updatePickButtons() {
   const pk = state.picking;
-  for (const b of document.querySelectorAll('.pick')) b.classList.toggle('active', !!(pk && pk.n === +b.dataset.pick && pk.what === b.dataset.what));
+  for (const b of document.querySelectorAll('.pick[data-pick]')) b.classList.toggle('active', !!(pk && pk.n === +b.dataset.pick && pk.what === b.dataset.what));
 }
 
 // Vértice más cercano al clic, dentro de 12 píxeles de pantalla.
@@ -1521,7 +1622,7 @@ const state = {
   name: '', dxf: null, allFeats: [], feats: [], proj: [], layerOn: new Map(), measure: true,
   detected: null, manualCrs: false, needsDetect: false,
   zones: [], zoneIdx: -1, zoneRect: null, needsZones: false, needsDrawFit: false, pendingDrawFit: false,
-  view: 'map', picking: null, planCoords: [],
+  view: 'map', picking: null, planCoords: [], northInserts: [], north: null, northApplied: false, autoMapShown: false,
 };
 let map = null, renderer = null;
 const groups = new Map();
@@ -1639,6 +1740,7 @@ function updateLocalInfo(lp) {
   const two = !!(lp && lp.twoPts);
   $('lRot').readOnly = two;
   $('lScale').readOnly = two;
+  for (const b of document.querySelectorAll('[data-nudge]')) b.disabled = two;
   const info = $('localInfo');
   if (!lp) { info.textContent = ''; return; }
   if (two) {
@@ -1646,7 +1748,7 @@ function updateLocalInfo(lp) {
     $('lScale').value = fmtIn(lp.scale, 6);
     info.textContent = 'Giro y escala calculados con los dos puntos.' + (Math.abs(lp.scale - 1) > 0.01 ? ' La escala se aleja de 1: revisa las unidades del dibujo o los puntos ingresados.' : '');
   } else {
-    info.textContent = (lp.p2Partial ? 'El punto 2 está incompleto y no se usa. ' : '') + 'Con un solo punto el plano se traslada con el giro y la escala indicados; agrega un segundo punto para calcularlos.';
+    info.textContent = (lp.p2Partial ? 'El punto 2 está incompleto y no se usa. ' : '') + 'Con un solo punto el plano se traslada con el giro y la escala indicados; agrega un segundo punto para calcularlos.' + (state.northApplied && state.north ? ' El giro viene de la flecha de norte del plano.' : '');
   }
 }
 
@@ -1671,16 +1773,16 @@ function initMap() {
   }
   map = L.map('map', { preferCanvas: true }).setView([-35.5, -71.5], 5);
   const esri = service => `https://server.arcgisonline.com/ArcGIS/rest/services/${service}/MapServer/tile/{z}/{y}/{x}`;
-  const imagery = () => L.tileLayer(esri('World_Imagery'), { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imágenes © Esri' });
+  const imagery = () => L.tileLayer(esri('World_Imagery'), { maxZoom: 20, maxNativeZoom: 18, attribution: 'Imágenes © Esri' });
   // Como la vista híbrida de Google: satélite con rutas y nombres de localidades encima.
   const hybrid = L.layerGroup([
     imagery(),
-    L.tileLayer(esri('Reference/World_Transportation'), { maxZoom: 21, maxNativeZoom: 19 }),
-    L.tileLayer(esri('Reference/World_Boundaries_and_Places'), { maxZoom: 21, maxNativeZoom: 19 }),
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 21, maxNativeZoom: 20, attribution: 'Nombres © OpenStreetMap, © CARTO' }),
+    L.tileLayer(esri('Reference/World_Transportation'), { maxZoom: 20, maxNativeZoom: 18 }),
+    L.tileLayer(esri('Reference/World_Boundaries_and_Places'), { maxZoom: 20, maxNativeZoom: 18 }),
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 20, maxNativeZoom: 20, attribution: 'Nombres © OpenStreetMap, © CARTO' }),
   ]);
   const sat = imagery();
-  const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 21, maxNativeZoom: 19, attribution: '© OpenStreetMap' });
+  const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap' });
   hybrid.addTo(map);
   L.control.layers({ 'Satélite con nombres': hybrid, 'Satélite': sat, 'Mapa': osm }, null, { position: 'topright' }).addTo(map);
   L.control.scale({ imperial: false }).addTo(map);
@@ -1714,6 +1816,7 @@ function renderMap(fit) {
     if (ft.kind === 'line') {
       const ll = ft.ll.map(p => [p[1], p[0]]);
       const style = { renderer, color: ft.color, weight: opts.width, opacity: 0.95 };
+      L.polyline(ll, { renderer, color: '#121714', weight: opts.width + 3, opacity: 0.45, interactive: false }).addTo(g);
       (ft.closed && opts.polys ? L.polygon(ll, Object.assign(style, { fillOpacity: 0.3 })) : L.polyline(ll, style)).addTo(g);
     } else {
       const m = L.circleMarker([ft.p[1], ft.p[0]], { renderer, radius: ft.kind === 'text' ? 2.5 : 4, color: ft.color, weight: 1, fillColor: ft.color, fillOpacity: 0.9 });
@@ -1814,6 +1917,7 @@ function rebuild(fit) {
     state.needsZones = false;
     state.zones = findZones(all);
     state.planCoords = findPlanCoords(all);
+    state.northInserts = findNorthInserts(state.dxf);
     renderZones();
   }
   const zone = zoneRect();
@@ -1827,6 +1931,11 @@ function rebuild(fit) {
   }
   renderDetection();
   renderCoordHint();
+  renderNorthHint();
+  if (state.north && state.north.options.length === 1 && !state.northApplied && currentCrs().id === 'local' && !parseNum($('lRot').value)) {
+    state.northApplied = true;
+    $('lRot').value = fmtIn(state.north.options[0].rot, 4);
+  }
   const crs = currentCrs();
 
   let res = { feats: [], bad: 0 }, problem = null;
@@ -1846,6 +1955,11 @@ function rebuild(fit) {
   updateSummary();
   renderDraw();
   updateMapEmpty();
+  // La primera vez que el plano queda ubicado, conviene ver el mapa.
+  if (!state.autoMapShown && state.proj.length && state.view === 'draw' && !state.picking) {
+    state.autoMapShown = true;
+    setView('map');
+  }
   if (state.needsDrawFit) { state.needsDrawFit = false; fitDraw(); }
   if (problem) msg('warn', problem);
   if (state.zones.length >= 2 && !zone) {
@@ -1904,6 +2018,10 @@ async function loadFile(file) {
     state.zoneIdx = -1;
     state.zoneRect = null;
     state.planCoords = [];
+    state.northInserts = [];
+    state.north = null;
+    state.northApplied = false;
+    state.autoMapShown = false;
     if (planMark) planMark.clearLayers();
     state.needsZones = true;
     state.needsDrawFit = true;
@@ -1961,7 +2079,7 @@ $('detectReset').addEventListener('click', useDetected);
 for (const b of $('viewTabs').querySelectorAll('button')) {
   b.addEventListener('click', () => { endPick(); setView(b.dataset.view); });
 }
-for (const b of document.querySelectorAll('.pick')) {
+for (const b of document.querySelectorAll('.pick[data-pick]')) {
   b.addEventListener('click', () => {
     const pk = state.picking;
     if (pk && pk.n === +b.dataset.pick && pk.what === b.dataset.what) endPick();
@@ -1969,7 +2087,16 @@ for (const b of document.querySelectorAll('.pick')) {
   });
 }
 $('pickCancel').addEventListener('click', endPick);
+for (const b of document.querySelectorAll('[data-nudge]')) {
+  b.addEventListener('click', () => {
+    const cur = parseNum($('lRot').value);
+    $('lRot').value = fmtIn((Number.isFinite(cur) ? cur : 0) + parseFloat(b.dataset.nudge), 4);
+    state.northApplied = true;
+    rebuild(false);
+  });
+}
 $('zoneDraw').addEventListener('click', startRect);
+
 $('coordUse').addEventListener('click', () => {
   const c = state.planCoords[0];
   if (!c) return;
