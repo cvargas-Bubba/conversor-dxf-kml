@@ -90,6 +90,8 @@ textarea{font:12px ui-monospace,Consolas,monospace;min-height:64px;margin-top:8p
 .zone-opt input{margin-top:3px}
 .zone-opt small{display:block;color:var(--muted);font-size:12px;word-break:break-word}
 .cp-actions{grid-column:1/-1;display:flex;gap:6px;flex-wrap:wrap}
+.coordhint{margin-top:10px;border:1px solid #bfe3dc;background:var(--accent-soft);border-radius:8px;padding:8px 10px;font-size:12.5px;word-break:break-word}
+.coordhint .cp-actions{margin-top:6px}
 .pick{font:inherit;font-size:12px;padding:4px 8px;border:1px solid var(--accent);color:var(--accent);background:#fff;border-radius:6px;cursor:pointer}
 .pick:hover{background:var(--accent-soft)}
 .pick.active{background:var(--accent);color:#fff}
@@ -163,6 +165,10 @@ textarea{font:12px ui-monospace,Consolas,monospace;min-height:64px;margin-top:8p
       <label class="field-label" for="localTarget">Sistema real de los puntos de control</label>
       <select id="localTarget"></select>
       <p class="hint">Usa puntos que reconozcas en el plano y cuya coordenada real conozcas (vértices, PR, puntos GPS). Escríbelos o elígelos con los botones: la X,Y en el dibujo y el Este/Norte en el mapa satelital. Si los escribes, hazlo sin separador de miles, por ejemplo <kbd>346485,12</kbd>.</p>
+      <div class="coordhint hidden" id="coordHint">
+        <div><strong>El plano indica una coordenada real:</strong> <span id="coordHintText"></span></div>
+        <div class="cp-actions"><button type="button" class="pick" id="coordUse">Usar como Este/Norte del punto 1</button><button type="button" class="pick" id="coordShow">Ver en el mapa</button></div>
+      </div>
       <div class="cp">
         <div class="cp-title">Punto de control 1</div>
         <div class="cp-actions"><button type="button" class="pick" data-pick="1" data-what="draw">Elegir X,Y en el dibujo</button><button type="button" class="pick" data-pick="1" data-what="map">Elegir Este/Norte en el mapa</button></div>
@@ -1262,6 +1268,7 @@ function buildKml() {
 // ---------------------------------------------------------------------------
 let dmap = null, dLines = null, dZones = null, dMarks = null, dRenderer = null, rectStart = null, rectShape = null;
 const mapMarks = typeof L !== 'undefined' ? L.layerGroup() : null;
+const planMark = typeof L !== 'undefined' ? L.layerGroup() : null;
 
 function initDrawMap() {
   if (typeof L === 'undefined') return;
@@ -1327,7 +1334,7 @@ function setView(v) {
   $('map').classList.toggle('hidden', v !== 'map');
   $('drawmap').classList.toggle('hidden', v !== 'draw');
   for (const b of $('viewTabs').querySelectorAll('button')) b.classList.toggle('on', b.dataset.view === v);
-  $('mapEmpty').classList.toggle('hidden', v !== 'map' || state.proj.length > 0 || !map);
+  updateMapEmpty();
   if (v === 'map' && map) map.invalidateSize(false);
   if (v === 'draw' && dmap) {
     dmap.invalidateSize(false);
@@ -1366,10 +1373,64 @@ function renderMarks() {
   }
 }
 
+// Coordenadas UTM escritas en los textos del plano, p. ej. "19 H 235332.80 E 6202103.54" o "E: 346.485,12 N: 6.297.900".
+function findPlanCoords(feats) {
+  const found = [], seen = new Set();
+  for (const ft of feats) {
+    if (ft.kind !== 'text') continue;
+    const t = ft.text.replace(/\s+/g, ' ').trim();
+    const nums = (t.match(/\d[\d.,]*\d/g) || []).map(parseNum).filter(Number.isFinite);
+    const e = nums.find(v => v >= 100000 && v < 1000000);
+    const n = nums.find(v => v >= 1000000 && v < 10000000);
+    if (e == null || n == null) continue;
+    const k = Math.round(e) + ',' + Math.round(n);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const z = /(?:HUSO|ZONA|ZONE|UTM)\s*(\d{1,2})\b|\b(\d{1,2})\s?([C-HJ-NP-X])\b/.exec(t.toUpperCase());
+    let zone = z ? +(z[1] || z[2]) : null;
+    if (!(zone >= 1 && zone <= 60)) zone = null;
+    found.push({ e, n, zone, south: zone && z[3] ? z[3] < 'N' : true, text: t });
+  }
+  return found;
+}
+
+function planCoordLonLat(c) {
+  const def = c.zone ? `+proj=utm +zone=${c.zone}${c.south ? ' +south' : ''} +datum=WGS84 +units=m +no_defs` : localTargetDef();
+  try {
+    const ll = def && proj4(def, 'WGS84').forward([c.e, c.n]);
+    return ll && Number.isFinite(ll[1]) ? ll : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function renderCoordHint() {
+  const c = state.dxf && currentCrs().id === 'local' ? state.planCoords[0] : null;
+  $('coordHint').classList.toggle('hidden', !c);
+  if (!c) return;
+  const zone = c.zone ? `huso ${c.zone}${c.south ? 'S' : 'N'} · ` : '';
+  const txt = c.text.length > 70 ? c.text.slice(0, 68) + '…' : c.text;
+  $('coordHintText').textContent = `${zone}Este ${fmt(c.e, 2)} · Norte ${fmt(c.n, 2)} (texto «${txt}»). Marca en el dibujo el punto al que corresponde.`;
+}
+
+// Acerca el mapa al lugar donde probablemente está el punto que se va a elegir.
+function centerForPick(n) {
+  if (!map) return;
+  const val = (k, c) => parseNum($(`p${k}${c}`).value);
+  const own = [val(n, 'e'), val(n, 'n')], other = [val(3 - n, 'e'), val(3 - n, 'n')];
+  let ll = own.every(Number.isFinite) ? realToLonLat(own) : null;
+  if (ll && Number.isFinite(ll[1])) { map.setView([ll[1], ll[0]], 18); return; }
+  if (state.proj.length) { fitMap(); return; }
+  ll = other.every(Number.isFinite) ? realToLonLat(other) : null;
+  if (!(ll && Number.isFinite(ll[1])) && state.planCoords[0]) ll = planCoordLonLat(state.planCoords[0]);
+  if (ll && Number.isFinite(ll[1])) map.setView([ll[1], ll[0]], 17);
+}
+
 function startPick(n, what) {
   endPick();
   state.picking = { n, what };
   setView(what);
+  if (what === 'map') centerForPick(n);
   $('main').classList.add('picking');
   $('pickText').textContent = what === 'map'
     ? `Punto ${n}: haz clic en el mapa satelital, en el mismo lugar que marcaste en el dibujo. Acerca el mapa todo lo que puedas.`
@@ -1396,6 +1457,7 @@ function endPick() {
   $('main').classList.remove('picking');
   $('pickBar').classList.add('hidden');
   updatePickButtons();
+  updateMapEmpty();
 }
 
 function updatePickButtons() {
@@ -1459,7 +1521,7 @@ const state = {
   name: '', dxf: null, allFeats: [], feats: [], proj: [], layerOn: new Map(), measure: true,
   detected: null, manualCrs: false, needsDetect: false,
   zones: [], zoneIdx: -1, zoneRect: null, needsZones: false, needsDrawFit: false, pendingDrawFit: false,
-  view: 'map', picking: null,
+  view: 'map', picking: null, planCoords: [],
 };
 let map = null, renderer = null;
 const groups = new Map();
@@ -1608,18 +1670,34 @@ function initMap() {
     return;
   }
   map = L.map('map', { preferCanvas: true }).setView([-35.5, -71.5], 5);
-  const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imágenes © Esri' });
+  const esri = service => `https://server.arcgisonline.com/ArcGIS/rest/services/${service}/MapServer/tile/{z}/{y}/{x}`;
+  const imagery = () => L.tileLayer(esri('World_Imagery'), { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imágenes © Esri' });
+  // Como la vista híbrida de Google: satélite con rutas y nombres de localidades encima.
+  const hybrid = L.layerGroup([
+    imagery(),
+    L.tileLayer(esri('Reference/World_Transportation'), { maxZoom: 21, maxNativeZoom: 19 }),
+    L.tileLayer(esri('Reference/World_Boundaries_and_Places'), { maxZoom: 21, maxNativeZoom: 19 }),
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 21, maxNativeZoom: 20, attribution: 'Nombres © OpenStreetMap, © CARTO' }),
+  ]);
+  const sat = imagery();
   const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 21, maxNativeZoom: 19, attribution: '© OpenStreetMap' });
-  sat.addTo(map);
-  L.control.layers({ 'Satélite': sat, 'Mapa': osm }, null, { position: 'topright' }).addTo(map);
+  hybrid.addTo(map);
+  L.control.layers({ 'Satélite con nombres': hybrid, 'Satélite': sat, 'Mapa': osm }, null, { position: 'topright' }).addTo(map);
   L.control.scale({ imperial: false }).addTo(map);
   renderer = L.canvas({ padding: 0.5 });
   mapMarks.addTo(map);
+  planMark.addTo(map);
   map.on('click', e => onPick('map', e));
 }
 
+// El aviso central del mapa solo aparece cuando no hay nada que mirar ni un punto por elegir.
+function updateMapEmpty() {
+  const marks = (mapMarks && mapMarks.getLayers().length) || (planMark && planMark.getLayers().length);
+  $('mapEmpty').classList.toggle('hidden', !map || state.view !== 'map' || state.proj.length > 0 || !!state.picking || !!marks);
+}
+
 function renderMap(fit) {
-  $('mapEmpty').classList.toggle('hidden', state.proj.length > 0 || !map || state.view !== 'map');
+  updateMapEmpty();
   if (map) {
     $('mapEmpty').querySelector('span').textContent = state.dxf && currentCrs().id === 'local'
       ? 'Ingresa un punto de control para ver el plano'
@@ -1735,6 +1813,7 @@ function rebuild(fit) {
   if (state.needsZones) {
     state.needsZones = false;
     state.zones = findZones(all);
+    state.planCoords = findPlanCoords(all);
     renderZones();
   }
   const zone = zoneRect();
@@ -1747,6 +1826,7 @@ function rebuild(fit) {
     applyDetection(wasLocal);
   }
   renderDetection();
+  renderCoordHint();
   const crs = currentCrs();
 
   let res = { feats: [], bad: 0 }, problem = null;
@@ -1765,6 +1845,7 @@ function rebuild(fit) {
   renderMap(fit);
   updateSummary();
   renderDraw();
+  updateMapEmpty();
   if (state.needsDrawFit) { state.needsDrawFit = false; fitDraw(); }
   if (problem) msg('warn', problem);
   if (state.zones.length >= 2 && !zone) {
@@ -1822,6 +1903,8 @@ async function loadFile(file) {
     state.zones = [];
     state.zoneIdx = -1;
     state.zoneRect = null;
+    state.planCoords = [];
+    if (planMark) planMark.clearLayers();
     state.needsZones = true;
     state.needsDrawFit = true;
     endPick();
@@ -1887,6 +1970,32 @@ for (const b of document.querySelectorAll('.pick')) {
 }
 $('pickCancel').addEventListener('click', endPick);
 $('zoneDraw').addEventListener('click', startRect);
+$('coordUse').addEventListener('click', () => {
+  const c = state.planCoords[0];
+  if (!c) return;
+  const id = c.zone && c.south ? utmId(familyOf($('localTarget').value) || 'wgs84', c.zone) : null;
+  if (id && id !== $('localTarget').value) {
+    $('localTarget').value = id;
+    storeSet('dxf2kml.localTarget', id);
+    updateCrsUi();
+  }
+  $('p1e').value = fmtIn(c.e, 2);
+  $('p1n').value = fmtIn(c.n, 2);
+  rebuild(state.proj.length === 0);
+});
+$('coordShow').addEventListener('click', () => {
+  const c = state.planCoords[0];
+  const ll = c && planCoordLonLat(c);
+  if (!ll || !map) return;
+  endPick();
+  setView('map');
+  planMark.clearLayers();
+  L.circleMarker([ll[1], ll[0]], { radius: 7, color: '#fff', weight: 2, fillColor: '#f59e0b', fillOpacity: 1, interactive: false })
+    .bindTooltip('Coordenada del plano', { permanent: true, direction: 'right', offset: [8, 0], className: 'cp-label' })
+    .addTo(planMark);
+  updateMapEmpty();
+  map.setView([ll[1], ll[0]], 17);
+});
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && state.picking) endPick(); });
 $('localTarget').addEventListener('change', () => {
   const id = $('localTarget').value;
