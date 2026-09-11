@@ -757,11 +757,39 @@ function interiorPoint(ring, off) {
 
 // Arma las áreas cerradas que forma la red de líneas (como CONTORNO en AutoCAD).
 // Devuelve las figuras nuevas y las figuras cerradas existentes que quedaron divididas por otras líneas.
+function distToSeg(px, py, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+  const t = l2 ? Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / l2)) : 0;
+  return Math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy));
+}
+
 function buildFaces(feats) {
-  const segs = [], closedPolys = [];
+  // Solo alrededor de los lotes: partes de un lote dividido por otras líneas (la servidumbre dentro del lote)
+  // y franjas pegadas a un lote (la servidumbre hacia el camino). Así no se rellenan tablas, croquis ni símbolos.
+  const none = { faces: [], split: [] };
+  const texts = feats.filter(f => f.kind === 'text');
+  const closed = [];
+  for (const ft of feats) {
+    if (ft.kind === 'line' && ft.closed && !ft.derived && ft.pts.length >= 3) {
+      closed.push({ ft, pts: ft.pts, area: Math.abs(ringSignedArea(ft.pts)), box: featBox(ft) });
+    }
+  }
+  if (!closed.length) return none;
+  const maxClosed = Math.max(...closed.map(p => p.area));
+  // Un lote: figura cerrada con un nombre de lote dentro y pocos textos (una tabla tiene muchos)
+  const lots = closed.filter(p => {
+    if (p.area < maxClosed * 0.02) return false;
+    const inside = texts.filter(t => t.pt[0] >= p.box[0] && t.pt[0] <= p.box[2] && t.pt[1] >= p.box[1] && t.pt[1] <= p.box[3] && inPoly(t.pt[0], t.pt[1], p.pts));
+    return inside.length <= 8 && inside.some(t => LOT_WORDS.test(t.text));
+  });
+  if (!lots.length) return none;
+  // Solo las líneas de las capas de los lotes: así, por ejemplo, las curvas de nivel no cortan el lote en bandas
+  const layers = new Set(lots.map(p => p.ft.layer));
+
+  const segs = [];
   let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
   for (const ft of feats) {
-    if (ft.kind !== 'line' || ft.derived) continue;
+    if (ft.kind !== 'line' || ft.derived || !layers.has(ft.layer)) continue;
     const p = ft.pts;
     for (const v of p) {
       if (v[0] < x1) x1 = v[0];
@@ -774,9 +802,7 @@ function buildFaces(feats) {
       const a = p[i], b = p[(i + 1) % p.length];
       if (a[0] !== b[0] || a[1] !== b[1]) segs.push({ a, b });
     }
-    if (ft.closed && p.length >= 3) closedPolys.push({ ft, pts: p, area: Math.abs(ringSignedArea(p)) });
   }
-  const none = { faces: [], split: [] };
   if (segs.length < 3 || segs.length > 4000) return none;
   const size = Math.max(x2 - x1, y2 - y1) || 1;
   const q = Math.max(size * 2e-6, 1e-4); // tolerancia para unir vértices casi coincidentes
@@ -874,23 +900,36 @@ function buildFaces(feats) {
     }
   }
 
-  // 4) clasifica las caras: fuera de toda figura cerrada, o dentro de una que quedó dividida en partes
-  const maxRef = Math.max(0, ...closedPolys.map(p => p.area), ...faces.map(f => f.area));
+  // 4) conserva las partes de un lote dividido y las franjas pegadas al borde de un lote
+  const maxLot = Math.max(...lots.map(p => p.area));
+  const near = size * 2e-4 + q * 10;
+  const touchesLot = f => {
+    for (let i = 0; i < f.ring.length; i++) {
+      const a = f.ring[i], b = f.ring[(i + 1) % f.ring.length];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) <= q * 4) continue;
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+      for (const p of lots) {
+        if (mx < p.box[0] - near || mx > p.box[2] + near || my < p.box[1] - near || my > p.box[3] + near) continue;
+        for (let k = 0; k < p.pts.length - 1; k++) if (distToSeg(mx, my, p.pts[k], p.pts[k + 1]) <= near) return true;
+      }
+    }
+    return false;
+  };
   const free = [], byHost = new Map();
   for (const f of faces) {
-    if (f.area < maxRef * 0.01) continue;
+    if (f.area < maxLot * 0.01 || f.area > maxLot * 1.05) continue;
     const c = interiorPoint(f.ring, size * 1e-4);
-    const host = closedPolys.filter(p => inPoly(c[0], c[1], p.pts)).sort((a, b) => a.area - b.area)[0];
-    if (!host) {
+    const host = lots.filter(p => inPoly(c[0], c[1], p.pts)).sort((a, b) => a.area - b.area)[0];
+    if (host) {
+      if (!byHost.has(host)) byHost.set(host, []);
+      byHost.get(host).push(f);
+    } else if (touchesLot(f)) {
       free.push(f);
-      continue;
     }
-    if (!byHost.has(host)) byHost.set(host, []);
-    byHost.get(host).push(f);
   }
   const out = free.slice(), split = [];
   for (const [host, list] of byHost) {
-    if (list.length < 2) continue; // la figura cerrada no está dividida: se queda como está
+    if (list.length < 2) continue; // el lote no está dividido: se queda como está
     split.push(polyKey(host.ft));
     out.push(...list);
   }
@@ -2163,10 +2202,20 @@ function rebuild(fit) {
   }
   const zone = zoneRect();
   let feats = zone ? all.filter(ft => inZone(ft, zone)) : all;
-  // Figuras que forman las líneas sueltas (servidumbres, franjas): solo sobre un dibujo, no sobre todo el archivo.
-  if (opts.faces && (zone || state.zones.length < 2)) {
+  // Figuras que forman las líneas sueltas (servidumbres, franjas). Se arman por dibujo:
+  // con una zona elegida, en esa zona; sin zona, en cada dibujo del archivo por separado.
+  if (opts.faces) {
     const key = [state.name, state.zoneIdx, JSON.stringify(state.zoneRect), opts.expand, opts.blockPts].join('|');
-    if (!state.faceCache || state.faceCache.key !== key) state.faceCache = Object.assign({ key }, faceFeatures(feats));
+    if (!state.faceCache || state.faceCache.key !== key) {
+      const groups = zone || state.zones.length < 2 ? [feats] : state.zones.map(z => all.filter(ft => inZone(ft, z)));
+      const acc = { key, feats: [], split: [] };
+      for (const g of groups) {
+        const r = faceFeatures(g);
+        acc.feats.push(...r.feats);
+        acc.split.push(...r.split);
+      }
+      state.faceCache = acc;
+    }
     // Un lote dividido por otras líneas se reemplaza por sus partes: queda solo su contorno, sin relleno.
     const split = new Set(state.faceCache.split);
     for (const ft of feats) if (ft.kind === 'line' && ft.closed && split.has(polyKey(ft))) ft.noFill = true;
